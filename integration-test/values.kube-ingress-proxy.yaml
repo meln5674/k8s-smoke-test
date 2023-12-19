@@ -1,0 +1,5 @@
+controllerAddresses:
+- className: nginx
+  address: ingress-nginx-controller.default.svc.cluster.local
+hostPort:
+  enabled: true

@@ -1,0 +1,6 @@
+nodePathMap: null
+sharedFileSystemPath: /var/shared-local-path-provisioner
+storageClass:
+  name: shared-local-path
+  volumeBindingMode: Immediate
+  provisionerName: rancher.io/shared-local-path

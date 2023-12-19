@@ -1,0 +1,3 @@
+[submodule "integration-test/local-path-provisioner"]
+	path = integration-test/local-path-provisioner
+	url = https://github.com/rancher/local-path-provisioner.git

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k8s-smoke-test.fullname" . }}-statefulset
+  labels:
+    {{- include "k8s-smoke-test.statefulset.labels" . | nindent 4 }}
+spec:
+  type: LoadBalancer
+  ports:
+    - port: {{ .Values.statefulset.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "k8s-smoke-test.statefulset.selectorLabels" . | nindent 4 }}

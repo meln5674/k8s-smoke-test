@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "k8s-smoke-test.fullname" . }}
+  labels:
+    {{- include "k8s-smoke-test.statefulset.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ include "k8s-smoke-test.fullname" . }}-statefulset
+  selector:
+    matchLabels:
+      {{- include "k8s-smoke-test.statefulset.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.statefulset.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "k8s-smoke-test.statefulset.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.statefulset.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "k8s-smoke-test.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.statefulset.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          args:
+          - --deployment-url=http://{{ include "k8s-smoke-test.fullname" . }}-deployment:{{ .Values.deployment.service.port }}/health
+          securityContext:
+            {{- toYaml .Values.statefulset.securityContext | nindent 12 }}
+          image: "{{ .Values.statefulset.image.registry | default .Values.image.registry }}/{{ .Values.statefulset.image.repository | default .Values.image.repository }}:{{ .Values.statefulset.image.tag | default .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.statefulset.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            {{- toYaml .Values.statefulset.resources | nindent 12 }}
+          volumeMounts:
+          - name: rwo
+            mountPath: /var/lib/k8s-smoke-test/rwo
+          - name: rwx
+            mountPath: /var/lib/k8s-smoke-test/rwx
+      {{- with .Values.statefulset.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.statefulset.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.statefulset.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+      - name: rwo
+        persistentVolumeClaim:
+          claimName: {{ include "k8s-smoke-test.fullname" . }}-rwo
+      - name: rwx
+        persistentVolumeClaim:
+          claimName: {{ include "k8s-smoke-test.fullname" . }}-rwx
+  volumeClaimTemplates:
+  - metadata:
+      name: rwo
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      volumeMode: Filesystem
+      resources:
+        requests:
+          storage: {{ .Values.persistence.rwo.size }}
+      storageClassName: {{ .Values.persistence.rwo.storageClassName }}
+

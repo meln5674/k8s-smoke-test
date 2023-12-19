@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "k8s-smoke-test.fullname" . }}
+  labels:
+    {{- include "k8s-smoke-test.job.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+spec:
+  template:
+    metadata:
+      {{- with .Values.job.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      {{- with .Values.job.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "k8s-smoke-test.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.job.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          args:
+          - --file-name={{ .Values.testFile.name }}
+          - |
+            --file-contents={{ .Values.testFile.contents | indent 12 | trimPrefix ("" | indent 12) }}
+          securityContext:
+            {{- toYaml .Values.job.securityContext | nindent 12 }}
+          image: "{{ .Values.job.image.registry | default .Values.image.registry }}/{{ .Values.job.image.repository | default .Values.image.repository }}:{{ .Values.job.image.tag | default .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.job.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.job.resources | nindent 12 }}
+          volumeMounts:
+          - name: rwx
+            mountPath: /var/lib/k8s-smoke-test/rwx/
+      {{- with .Values.job.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.job.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.job.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+      - name: rwx
+        persistentVolumeClaim:
+          claimName: {{ include "k8s-smoke-test.fullname" . }}-rwx

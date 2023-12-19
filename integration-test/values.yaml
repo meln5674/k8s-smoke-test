@@ -1,0 +1,8 @@
+persistence:
+  rwo:
+    storageClassName: standard
+  rwx:
+    storageClassName: shared-local-path
+deployment:
+  ingress:
+    className: nginx

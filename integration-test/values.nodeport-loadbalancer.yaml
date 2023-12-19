@@ -1,0 +1,7 @@
+config:
+  controller:
+    include:
+      hostnames: false
+      internalIPs: true
+      controlPlaneNodes: true
+

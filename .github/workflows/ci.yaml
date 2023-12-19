@@ -1,0 +1,55 @@
+name: CI
+
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+on:
+  workflow_dispatch: {}
+  push:
+    # Tags should be built by CD instead
+    tags-ignore: ['*']
+    branches: ['*']
+  pull_request: {}
+
+env:
+  GO_VERSION: 1.21.3
+
+  GOPRIVATE: 'github.com/meln5674/*'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      # Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          submodules: 'true'
+
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+
+      # Install Deps
+      - name: Install Dependencies
+        run: |
+          make -j mods build-tools
+
+      # Run Linter
+      - name: Lint chart
+        run: |
+          ./bin/helm dependency update ./deploy/helm/k8s-smoke-test
+          ./bin/helm lint ./deploy/helm/k8s-smoke-test
+      - name: Lint code
+        run: |
+          make vet
+
+      # Tests
+      - name: E2E Tests
+        run: |
+          make e2e IS_CI=1
