@@ -14,6 +14,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
@@ -149,6 +150,7 @@ func Test(ctx context.Context, cfg *Config) error {
 
 	log.Printf("Found pod %s to port-forward...", pod.Name)
 
+	log.Printf("Testing Port-Forwarding...")
 	err = portForward(ctx, cfg.K8sConfig, cfg.ReleaseNamespace, pod.Name, []string{fmt.Sprintf("%d:8080", cfg.PortForwardLocalPort)}, func() error {
 		portForwardURL := fmt.Sprintf("http://localhost:%d/rwx/%s", cfg.PortForwardLocalPort, cfg.MergedValues.TestFile.Name)
 		resp, err := http.Get(portForwardURL)
@@ -159,6 +161,7 @@ func Test(ctx context.Context, cfg *Config) error {
 		return nil
 	})
 
+	log.Printf("Testing Ingress...")
 	ingressHostname := cfg.MergedValues.Deployment.Ingress.Hostname
 	ingressProtocol := "http"
 	if len(cfg.MergedValues.Deployment.Ingress.TLS) != 0 {
@@ -171,13 +174,15 @@ func Test(ctx context.Context, cfg *Config) error {
 		return err
 	}
 
-	loadBalancer, err := k8sClient.CoreV1().Services(cfg.ReleaseNamespace).Get(ctx, fullname+"-statefulset", metav1.GetOptions{})
+	log.Printf("Getting StatefulSet Service...")
+	statefulSetService, err := k8sClient.CoreV1().Services(cfg.ReleaseNamespace).Get(ctx, fullname+"-statefulset", metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("LoadBalancer service does not exist: %s", err)
 	}
 
+	log.Print("Testing NodePort...")
 	nodePortHostname := cfg.MergedValues.StatefulSet.NodePortHostname
-	nodePort := loadBalancer.Spec.Ports[0].NodePort
+	nodePort := statefulSetService.Spec.Ports[0].NodePort
 	if nodePort == 0 {
 		return fmt.Errorf("LoadBalancer service does not have a nodePort assigned")
 	}
@@ -189,11 +194,12 @@ func Test(ctx context.Context, cfg *Config) error {
 		return err
 	}
 
-	loadBalancerIngresses := loadBalancer.Status.LoadBalancer.Ingress
-	if len(loadBalancerIngresses) == 0 {
+	log.Print("Testing LoadBalancer...")
+	statefulSetServiceIngresses := statefulSetService.Status.LoadBalancer.Ingress
+	if len(statefulSetServiceIngresses) == 0 {
 		return fmt.Errorf("LoadBalancer service has no ingresses")
 	}
-	for ix, ingress := range loadBalancerIngresses {
+	for ix, ingress := range statefulSetServiceIngresses {
 		if ingress.Hostname == "" && ingress.IP == "" {
 			return fmt.Errorf("LoadBalancer servce ingress at index %d has neither a Hostname nor an IP", ix)
 		}
@@ -202,8 +208,8 @@ func Test(ctx context.Context, cfg *Config) error {
 			hostname = ingress.IP
 		}
 
-		if len(ingress.Ports) != len(loadBalancer.Spec.Ports) {
-			return fmt.Errorf("LoadBalancer service ingress at index %d has %d ports instead of the expected %d", ix, len(ingress.Ports), len(loadBalancer.Spec.Ports))
+		if len(ingress.Ports) != len(statefulSetService.Spec.Ports) {
+			return fmt.Errorf("LoadBalancer service ingress at index %d has %d ports instead of the expected %d", ix, len(ingress.Ports), len(statefulSetService.Spec.Ports))
 		}
 		ingressPortStatus := ingress.Ports[0]
 		if ingressPortStatus.Error != nil {
@@ -234,6 +240,17 @@ func Test(ctx context.Context, cfg *Config) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	log.Print("Testing Logs...")
+	logs, err := k8sClient.CoreV1().Pods(cfg.ReleaseNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{}).Stream(ctx)
+	if err != nil {
+		return errors.Wrap(err, "Failed to start streaming pod logs")
+	}
+	defer logs.Close()
+	_, err = io.Copy(os.Stdout, logs)
+	if err != nil {
+		return errors.Wrap(err, "Failed to stream logs")
 	}
 
 	return nil
