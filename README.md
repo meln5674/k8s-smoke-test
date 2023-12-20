@@ -13,6 +13,8 @@ It can also be used as a smoke test against a production cluster.
 * Pod-to-Pod Networking
 * Pod-to-Service Networking
 * CoreDNS
+* Port-Forwarding
+* Pod Logs
 * NodePort services
 * LoadBalancer services
 * Dynamic ReadWriteOnce (RWO) PVCs
@@ -41,11 +43,15 @@ The StatefulSet exposes a GET endpoint which reads this file from the RWX PVC, a
 
 The CLI will first deploy the helm chart, and wait for the job to complete.
 
-Then, it will make a GET request to the Ingress to retrieve the file written by the job.
+Next, the deployment's pod will be fetched using the API. This pod will be port-forwarded to, and a GET request will be sent to to retrieve the file written by the job.
 
-Next, it will make a GET request to the NodePort underlying the LoadBalancer to receive the file written by the job.
+Next, the pods logs will be streamed to the console.
 
-Finally, it will make a POST request to the LoadBalancer service to create a file, and then a GET request to the LoadBalancer endpoint (as reported by the status) to retrieve that same file.
+Then, it will make a GET request to the Deployment's Ingress to retrieve the file written by the job.
+
+Next, it will make a GET request to the NodePort underlying the StatefulSet's LoadBalancer to receive the file written by the job.
+
+Finally, it will make a POST request to the StatefulSet's LoadBalancer service to create a file, and then a GET request to the LoadBalancer endpoint (as reported by the status) to retrieve that same file.
 
 ## Running
 
