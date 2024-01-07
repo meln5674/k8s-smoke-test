@@ -43,6 +43,7 @@ func testURL(errName string, url string, resp *http.Response, err error, expecte
 	return nil
 }
 
+// MergedValues is the subset of the helm values.yaml that need to be inspected to execute the test
 type MergedValues struct {
 	FullnameOverride string            `json:"fullnameOverride"`
 	TestFile         TestFile          `json:"testFile"`
@@ -50,23 +51,28 @@ type MergedValues struct {
 	StatefulSet      StatefulSetValues `json:"statefulset"`
 }
 
+// TestFile is the location and contents of a test file to submit to the services as part of the test
 type TestFile struct {
 	Name     string `json:"name"`
 	Contents string `json:"contents"`
 }
 
+// DeploymentValues is the subset of the helm values.yaml deployment: field that need to be inspected to execute the test
 type DeploymentValues struct {
 	Ingress DeploymentIngressValues `json:"ingress"`
 }
 
+// DeploymentValues is the subset of the helm values.yaml deployment.ingress: field that need to be inspected to execute the test
 type DeploymentIngressValues struct {
 	Hostname string                       `json:"hostname"`
 	TLS      []DeploymentIngressTLSValues `json:"tls"`
 }
 
+// DeploymentValues is the subset of the helm values.yaml deployment.ingress.tls: field that need to be inspected to execute the test
 type DeploymentIngressTLSValues struct {
 }
 
+// DeploymentValues is the subset of the helm values.yaml statefulset: field that need to be inspected to execute the test
 type StatefulSetValues struct {
 	NodePortHostname string `json:"nodePortHostname"`
 }
@@ -108,79 +114,106 @@ func portForward(ctx context.Context, k8sConfig *rest.Config, namespace, pod str
 	return f()
 }
 
+// Config is the configuration for a test
 type Config struct {
-	HTTP                 *http.Client
-	K8sConfig            *rest.Config
-	ReleaseNamespace     string
-	ReleaseName          string
-	MergedValues         *MergedValues
+	// HTTP is the HTTP client to use, which can be configured to use a proxy, include mTLS certificates, etc
+	HTTP *http.Client
+	// K8sConfig is the Kubernetes configuration to contact the cluster that the helm chart was deployed to
+	K8sConfig *rest.Config
+	// ReleaseNamespace is the Kubernetes namespace that the helm chart was deployed to
+	ReleaseNamespace string
+	// ReleaseName is the name of the helm chart release
+	ReleaseName string
+	// MergedValues is the parsed complete values.yaml from the helm release
+	MergedValues *MergedValues
+	// PortForwardLocalPort is the local port to use to test port-forwarding
 	PortForwardLocalPort int
+	// IngressHostname is the hostname to use instead of the ingress hostname from the values.yaml to contact the services over ingress.
+	// If non-empty, requests to the ingress will use this as the hostname in the URL, and the deployment.ingress.hostname as the Host header/TLS server name.
+	// This can be used to test ingress when DNS is not configured.
+	IngressHostname string
+	// IngressTLS indicates to use TLS (HTTPS) for testing the ingress, regardless of what is set in the helm values.yaml
+	IngressTLS bool
 }
 
-func Test(ctx context.Context, cfg *Config) error {
-	k8sClient, err := kubernetes.NewForConfig(cfg.K8sConfig)
-	if err != nil {
-		return errors.Wrap(err, "Failed to create Kubernetes client")
-	}
+func (cfg *Config) K8sClient() (*kubernetes.Clientset, error) {
+	return kubernetes.NewForConfig(cfg.K8sConfig)
+}
 
+func (cfg *Config) Fullname() string {
 	fullname := cfg.MergedValues.FullnameOverride
-	if fullname == "" {
-		if strings.Contains(cfg.ReleaseName, "k8s-smoke-test") {
-			fullname = cfg.ReleaseName
-		} else {
-			fullname = cfg.ReleaseName + "-k8s-smoke-test"
-		}
+	if fullname != "" {
+		return fullname
 	}
+	if strings.Contains(cfg.ReleaseName, "k8s-smoke-test") {
+		return cfg.ReleaseName
+	}
+	return cfg.ReleaseName + "-k8s-smoke-test"
+}
 
-	log.Println("Finding pod to port-forward...")
+func (cfg *Config) PickDeploymentPod(ctx context.Context, k8sClient *kubernetes.Clientset, fullname string) (*corev1.Pod, error) {
 	deploymentService, err := k8sClient.CoreV1().Services(cfg.ReleaseNamespace).Get(ctx, fmt.Sprintf("%s-deployment", fullname), metav1.GetOptions{})
 	if err != nil {
-		return errors.Wrap(err, "Failed to get deployment service")
+		return nil, errors.Wrap(err, "Failed to get Deployment Service")
 	}
 	deploymentPods, err := k8sClient.CoreV1().Pods(cfg.ReleaseNamespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labels.FormatLabels(deploymentService.Spec.Selector),
 	})
 	if err != nil {
-		return errors.Wrap(err, "Failed to list deployment pods")
+		return nil, errors.Wrap(err, "Failed to list Deployment Pods")
 	}
 	if len(deploymentPods.Items) == 0 {
-		return errors.New("No deployment pods were present")
+		return nil, errors.New("No deployment pods were present")
 	}
-	pod := deploymentPods.Items[0]
+	return &deploymentPods.Items[0], nil
+}
 
-	log.Printf("Found pod %s to port-forward...", pod.Name)
+func (cfg *Config) GetStatefulSetService(ctx context.Context, k8sClient *kubernetes.Clientset, fullname string) (*corev1.Service, error) {
+	statefulSetService, err := k8sClient.CoreV1().Services(cfg.ReleaseNamespace).Get(ctx, fullname+"-statefulset", metav1.GetOptions{})
+	if err != nil {
+		return nil, errors.Wrap(err, "Failed to get StatefulSet Service")
+	}
+	return statefulSetService, nil
+}
 
-	log.Printf("Testing Port-Forwarding...")
-	err = portForward(ctx, cfg.K8sConfig, cfg.ReleaseNamespace, pod.Name, []string{fmt.Sprintf("%d:8080", cfg.PortForwardLocalPort)}, func() error {
+func TestPortForward(ctx context.Context, cfg *Config, pod *corev1.Pod) error {
+	return portForward(ctx, cfg.K8sConfig, cfg.ReleaseNamespace, pod.Name, []string{fmt.Sprintf("%d:8080", cfg.PortForwardLocalPort)}, func() error {
 		portForwardURL := fmt.Sprintf("http://localhost:%d/rwx/%s", cfg.PortForwardLocalPort, cfg.MergedValues.TestFile.Name)
-		resp, err := http.Get(portForwardURL)
+		resp, err := cfg.HTTP.Get(portForwardURL)
 		err = testURL("GET RWO Port-Forward", portForwardURL, resp, err, cfg.MergedValues.TestFile.Contents)
 		if err != nil {
 			return err
 		}
 		return nil
 	})
+}
 
-	log.Printf("Testing Ingress...")
-	ingressHostname := cfg.MergedValues.Deployment.Ingress.Hostname
+func TestIngress(ctx context.Context, cfg *Config) error {
+	ingressHostname := cfg.IngressHostname
+	if ingressHostname == "" {
+		ingressHostname = cfg.MergedValues.Deployment.Ingress.Hostname
+	}
 	ingressProtocol := "http"
-	if len(cfg.MergedValues.Deployment.Ingress.TLS) != 0 {
+	if cfg.IngressTLS || len(cfg.MergedValues.Deployment.Ingress.TLS) != 0 {
 		ingressProtocol = "https"
 	}
 	ingressURL := fmt.Sprintf("%s://%s/rwx/%s", ingressProtocol, ingressHostname, cfg.MergedValues.TestFile.Name)
-	resp, err := http.Get(ingressURL)
+	req, err := http.NewRequest(http.MethodGet, ingressURL, nil)
+	if err != nil {
+		return err
+	}
+	if cfg.IngressHostname != "" {
+		req.Host = cfg.MergedValues.Deployment.Ingress.Hostname
+	}
+	resp, err := cfg.HTTP.Do(req)
 	err = testURL("GET RWO Ingress", ingressURL, resp, err, cfg.MergedValues.TestFile.Contents)
 	if err != nil {
 		return err
 	}
+	return nil
+}
 
-	log.Printf("Getting StatefulSet Service...")
-	statefulSetService, err := k8sClient.CoreV1().Services(cfg.ReleaseNamespace).Get(ctx, fullname+"-statefulset", metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("LoadBalancer service does not exist: %s", err)
-	}
-
-	log.Print("Testing NodePort...")
+func TestNodePort(ctx context.Context, cfg *Config, statefulSetService *corev1.Service) error {
 	nodePortHostname := cfg.MergedValues.StatefulSet.NodePortHostname
 	nodePort := statefulSetService.Spec.Ports[0].NodePort
 	if nodePort == 0 {
@@ -188,13 +221,15 @@ func Test(ctx context.Context, cfg *Config) error {
 	}
 
 	nodePortURL := fmt.Sprintf("http://%s:%d/rwx/%s", nodePortHostname, nodePort, cfg.MergedValues.TestFile.Name)
-	resp, err = cfg.HTTP.Get(nodePortURL)
+	resp, err := cfg.HTTP.Get(nodePortURL)
 	err = testURL("GET RWX NodePort", nodePortURL, resp, err, cfg.MergedValues.TestFile.Contents)
 	if err != nil {
 		return err
 	}
+	return nil
+}
 
-	log.Print("Testing LoadBalancer...")
+func TestLoadBalancer(ctx context.Context, cfg *Config, statefulSetService *corev1.Service) error {
 	statefulSetServiceIngresses := statefulSetService.Status.LoadBalancer.Ingress
 	if len(statefulSetServiceIngresses) == 0 {
 		return fmt.Errorf("LoadBalancer service has no ingresses")
@@ -213,7 +248,7 @@ func Test(ctx context.Context, cfg *Config) error {
 		}
 		ingressPortStatus := ingress.Ports[0]
 		if ingressPortStatus.Error != nil {
-			return fmt.Errorf("LoadBalancer service ingress at index %d reports error: %s", ix, err)
+			return fmt.Errorf("LoadBalancer service ingress at index %d reports error: %s", ix, *ingressPortStatus.Error)
 		}
 		port := ingressPortStatus.Port
 		if port == 0 {
@@ -221,7 +256,7 @@ func Test(ctx context.Context, cfg *Config) error {
 		}
 
 		loadBalancerURL := fmt.Sprintf("http://%s:%d/rwx/%s", hostname, port, cfg.MergedValues.TestFile.Name)
-		resp, err = cfg.HTTP.Get(loadBalancerURL)
+		resp, err := cfg.HTTP.Get(loadBalancerURL)
 		err = testURL(fmt.Sprintf("GET RWX LoadBalancer ingress index %d", ix), loadBalancerURL, resp, err, cfg.MergedValues.TestFile.Contents)
 		if err != nil {
 			return err
@@ -241,16 +276,71 @@ func Test(ctx context.Context, cfg *Config) error {
 			return err
 		}
 	}
+	return nil
+}
 
-	log.Print("Testing Logs...")
+func TestLogs(ctx context.Context, cfg *Config, k8sClient *kubernetes.Clientset, pod *corev1.Pod, dest io.Writer) error {
 	logs, err := k8sClient.CoreV1().Pods(cfg.ReleaseNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{}).Stream(ctx)
 	if err != nil {
 		return errors.Wrap(err, "Failed to start streaming pod logs")
 	}
 	defer logs.Close()
-	_, err = io.Copy(os.Stdout, logs)
+	_, err = io.Copy(dest, logs)
 	if err != nil {
 		return errors.Wrap(err, "Failed to stream logs")
+	}
+	return nil
+}
+
+func Test(ctx context.Context, cfg *Config) error {
+	k8sClient, err := cfg.K8sClient()
+	if err != nil {
+		return errors.Wrap(err, "Failed to create Kubernetes client")
+	}
+
+	fullname := cfg.Fullname()
+
+	log.Println("Finding pod to port-forward...")
+	deploymentPod, err := cfg.PickDeploymentPod(ctx, k8sClient, fullname)
+	if err != nil {
+		return err
+	}
+	log.Printf("Found pod %s to port-forward...", deploymentPod.Name)
+
+	log.Printf("Testing Port-Forwarding...")
+	err = TestPortForward(ctx, cfg, deploymentPod)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Testing Ingress...")
+	err = TestIngress(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Getting StatefulSet Service...")
+	statefulSetService, err := cfg.GetStatefulSetService(ctx, k8sClient, fullname)
+	if err != nil {
+		return err
+	}
+
+	log.Print("Testing NodePort...")
+	err = TestNodePort(ctx, cfg, statefulSetService)
+	if err != nil {
+		return err
+	}
+
+	log.Print("Testing LoadBalancer...")
+	err = TestLoadBalancer(ctx, cfg, statefulSetService)
+	if err != nil {
+		return err
+	}
+
+	log.Print("Testing Logs...")
+	err = TestLogs(ctx, cfg, k8sClient, deploymentPod, os.Stdout)
+	if err != nil {
+		return err
 	}
 
 	return nil
